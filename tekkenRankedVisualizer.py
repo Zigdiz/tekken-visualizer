@@ -188,10 +188,10 @@ def home():
     return render_template_string('''
     <html>
     <head>
-        <title>Player Visualization API</title>
+        <title>Player Visualization Tool</title>
     </head>
     <body>
-        <h1>Player Visualization API</h1>
+        <h1>Player Visualization Tool</h1>
         <p>Welcome to the <a href="https://wank.wavu.wiki" target="_blank">wank.wavu.wiki</a> player data Visualization tool. This tool allows you to visualize player data from the wank.wavu.wiki website.</p>
         <h2>How It Works</h2>
         <p>Enter the URL of a player's profile from <a href="https://wank.wavu.wiki" target="_blank">wank.wavu.wiki</a> in the textbox below. For example: <a href="https://wank.wavu.wiki/player/3BgbnRiDAaMa" target="_blank">https://wank.wavu.wiki/player/3BgbnRiDAaMa</a>. The tool will fetch the player's data and allow you to generate three different types of graphs: rating gain, win rate percentage against each character, and opponent character usage percentage against you.</p>
@@ -238,10 +238,10 @@ def fetch_data():
     return render_template_string('''
     <html>
     <head>
-        <title>Player Visualization API</title>
+        <title>Player Visualization tool</title>
     </head>
     <body>
-        <h1>Player Visualization API</h1>
+        <h1>Player Visualization tool</h1>
         <p>Data fetched successfully for player: {{ player_id }}</p>
         <h2>Choose a character and graph type:</h2>
         <form action="/visualize" method="get">
