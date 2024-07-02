@@ -1,6 +1,8 @@
 import matplotlib
 matplotlib.use('Agg')  # Use the Agg backend for non-interactive plotting
 
+from waitress import serve
+
 from flask import Flask, request, jsonify, send_file, render_template_string
 import requests
 from bs4 import BeautifulSoup
@@ -255,4 +257,4 @@ def visualize():
     return send_file(buf, mimetype='image/png')
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    serve(app, host="0.0.0.0", port=8000)
