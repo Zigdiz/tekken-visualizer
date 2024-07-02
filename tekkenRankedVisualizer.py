@@ -2,7 +2,6 @@ import matplotlib
 matplotlib.use('Agg')  # Use the Agg backend for non-interactive plotting
 
 from waitress import serve
-
 from flask import Flask, request, jsonify, send_file, render_template_string
 import requests
 from bs4 import BeautifulSoup
@@ -193,24 +192,76 @@ def home():
     </head>
     <body>
         <h1>Player Visualization API</h1>
-        <p>Welcome to the Player Visualization API. This API provides visualizations for player data.</p>
-        <h2>Usage</h2>
-        <p>To use this API, send a GET request to the <code>/visualize</code> endpoint with the following query parameters:</p>
-        <ul>
-            <li><code>player_id</code>: The ID of the player.</li>
-            <li><code>character</code>: The character you want to visualize.</li>
-            <li><code>graph</code>: The type of graph you want to generate. Valid options are <code>daily_gains</code>, <code>win_rates</code>, and <code>distribution</code>.</li>
-        </ul>
-        <h3>Example Requests</h3>
-        <p>Daily Gains:</p>
-        <code><a href="/visualize?player_id=3BgbnRiDAaMa&character=Azucena&graph=daily_gains">/visualize?player_id=3BgbnRiDAaMa&character=Azucena&graph=daily_gains</a></code>
-        <p>Win Rates:</p>
-        <code><a href="/visualize?player_id=3BgbnRiDAaMa&character=Azucena&graph=win_rates">/visualize?player_id=3BgbnRiDAaMa&character=Azucena&graph=win_rates</a></code>
-        <p>Opponent Distribution:</p>
-        <code><a href="/visualize?player_id=3BgbnRiDAaMa&character=Azucena&graph=distribution">/visualize?player_id=3BgbnRiDAaMa&character=Azucena&graph=distribution</a></code>
+        <p>Welcome to the <a href="https://wank.wavu.wiki" target="_blank">wank.wavu.wiki</a> player data Visualization tool. This tool allows you to visualize player data from the wank.wavu.wiki website.</p>
+        <h2>How It Works</h2>
+        <p>Enter the URL of a player's profile from <a href="https://wank.wavu.wiki" target="_blank">wank.wavu.wiki</a> in the textbox below. For example: <a href="https://wank.wavu.wiki/player/3BgbnRiDAaMa" target="_blank">https://wank.wavu.wiki/player/3BgbnRiDAaMa</a>. The tool will fetch the player's data and allow you to generate three different types of graphs: rating gain, win rate percentage against each character, and opponent character usage percentage against you.</p>
+        <h2>Enter your player URL:</h2>
+        <form action="/fetch_data" method="post">
+            <label for="player_url">Player URL:</label>
+            <input type="text" id="player_url" name="player_url" style="width:400px;">
+            <button type="submit">Fetch Data</button>
+        </form>
+        <div id="graphs" style="margin-top:20px;">
+            {% if graphs %}
+                <h2>Choose a graph type:</h2>
+                <form action="/visualize" method="get">
+                    <input type="hidden" name="player_id" value="{{ player_id }}">
+                    <input type="hidden" name="character" value="{{ character }}">
+                    <button type="submit" name="graph" value="daily_gains">Daily Gains</button>
+                    <button type="submit" name="graph" value="win_rates">Win Rates</button>
+                    <button type="submit" name="graph" value="distribution">Opponent Distribution</button>
+                </form>
+            {% endif %}
+        </div>
     </body>
     </html>
-    ''')
+    ''', graphs=False)
+
+
+@app.route('/fetch_data', methods=['POST'])
+def fetch_data():
+    player_url = request.form.get('player_url')
+    if not player_url:
+        return jsonify({"error": "Player URL is required."}), 400
+
+    # Extract the player ID from the URL
+    player_id = player_url.split('/')[-1]
+
+    df = fetch_player_data(player_id)
+    if df.empty:
+        return jsonify({"error": "No data found for the given player URL."}), 400
+
+    characters = df['character'].unique()
+    if len(characters) == 0:
+        return jsonify({"error": "No characters found for the given player URL."}), 400
+
+    return render_template_string('''
+    <html>
+    <head>
+        <title>Player Visualization API</title>
+    </head>
+    <body>
+        <h1>Player Visualization API</h1>
+        <p>Data fetched successfully for player: {{ player_id }}</p>
+        <h2>Choose a character and graph type:</h2>
+        <form action="/visualize" method="get">
+            <input type="hidden" name="player_id" value="{{ player_id }}">
+            <label for="character">Character:</label>
+            <select name="character" id="character">
+                {% for char in characters %}
+                    <option value="{{ char }}">{{ char }}</option>
+                {% endfor %}
+            </select>
+            <br><br>
+            <button type="submit" name="graph" value="daily_gains">Daily Gains</button>
+            <button type="submit" name="graph" value="win_rates">Win Rates</button>
+            <button type="submit" name="graph" value="distribution">Opponent Distribution</button>
+        </form>
+    </body>
+    </html>
+    ''', player_id=player_id, characters=characters)
+
+
 
 @app.route('/visualize', methods=['GET'])
 def visualize():
