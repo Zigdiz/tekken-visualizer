@@ -1,8 +1,6 @@
-# plotting.py
-
 import matplotlib.pyplot as plt
 import io
-import pandas as pd  # Add this import
+import pandas as pd
 
 def plot_daily_gains(df, char, start_date, end_date):
     char_df = df[df['character'] == char]
@@ -39,6 +37,11 @@ def plot_win_rates(df, char, start_date, end_date):
     if char_df.empty:
         return None
     
+    # Calculate total win rate
+    total_matches = len(char_df)
+    total_wins = char_df['isWin'].sum()
+    total_win_rate = (total_wins / total_matches) * 100 if total_matches > 0 else 0
+    
     # Calculate win rates by opponent character
     win_rates = char_df.groupby('opponentChar')['isWin'].mean() * 100
     match_counts = char_df['opponentChar'].value_counts()
@@ -49,6 +52,14 @@ def plot_win_rates(df, char, start_date, end_date):
         'winRate': win_rates.values,
         'matchCount': match_counts[win_rates.index].values
     })
+
+    # Add total win rate as the first row
+    total_win_rate_df = pd.DataFrame({
+        'opponentChar': ['Total'],
+        'winRate': [total_win_rate],
+        'matchCount': [total_matches]
+    })
+    win_rate_df = pd.concat([total_win_rate_df, win_rate_df], ignore_index=True)
 
     # Plot the win rates
     plt.figure(figsize=(12, 8))
