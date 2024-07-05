@@ -2,17 +2,29 @@ import matplotlib
 matplotlib.use('Agg')  # Use the Agg backend for non-interactive plotting
 
 from waitress import serve
-from flask import Flask, request, jsonify, send_file, render_template_string
+from flask import Flask, request, jsonify, send_file, render_template_string, redirect, url_for, session
+from flask_session import Session
 import requests
 from bs4 import BeautifulSoup
-import matplotlib.pyplot as plt
-from datetime import datetime
+from datetime import datetime, date
 import pandas as pd
 import io
+import json
+from io import StringIO
+from dateutil.relativedelta import relativedelta
+
+# Import the plotting functions from plotting.py
+from plotting import plot_daily_gains, plot_win_rates, plot_opponent_distribution
 
 app = Flask(__name__)
+app.secret_key = 'your_secret_key'  # Replace with a strong secret key
 
-def fetch_player_data(player_id):
+# Configure server-side session storage
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['SESSION_FILE_DIR'] = './.flask_session/'
+Session(app)
+
+def fetch_player_data(player_id, start_date=None, end_date=None):
     # URL of the webpage
     url = f'https://wank.wavu.wiki/player/{player_id}'
 
@@ -81,110 +93,29 @@ def fetch_player_data(player_id):
     df['whenDateTime'] = pd.to_datetime(df['whenDateTime'], format='%d %b %Y %H:%M')
     df['date'] = df['whenDateTime'].dt.date
 
+    # Filter by date range if provided
+    if start_date and end_date:
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
+    elif start_date or end_date:
+        raise ValueError("Both start_date and end_date must be provided.")
+
     # Sort the DataFrame by 'whenDateTime'
     df = df.sort_values(by='whenDateTime')
 
     return df
 
-def plot_daily_gains(df, char):
-    char_df = df[df['character'] == char]
-
-    if char_df.empty:
-        return None
-    
-    # Extract the last match of each day for the character
-    last_matches = char_df.groupby('date').apply(lambda x: x.iloc[-1])
-    
-    # Calculate the daily rating gains
-    last_matches['dailyGain'] = last_matches['newRating']
-
-    # Plot the daily gains
-    plt.figure(figsize=(10, 6))
-    plt.plot(last_matches['date'], last_matches['dailyGain'], marker='o')
-    plt.title(f'Daily Gains in Rating for {char}')
-    plt.xlabel('Date')
-    plt.ylabel('Rating')
-    plt.xticks(rotation=45)
-    plt.grid(True)
-    plt.tight_layout()
-    
-    # Save plot to a BytesIO object
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
-    plt.close()
-    
-    return buf
-
-def plot_win_rates(df, char):
-    char_df = df[df['character'] == char]
-    if char_df.empty:
-        return None
-    
-    # Calculate win rates by opponent character
-    win_rates = char_df.groupby('opponentChar')['isWin'].mean() * 100
-    match_counts = char_df['opponentChar'].value_counts()
-
-    # Create a DataFrame for visualization
-    win_rate_df = pd.DataFrame({
-        'opponentChar': win_rates.index,
-        'winRate': win_rates.values,
-        'matchCount': match_counts[win_rates.index].values
-    })
-
-    # Plot the win rates
-    plt.figure(figsize=(12, 8))
-    bars = plt.bar(win_rate_df['opponentChar'], win_rate_df['winRate'], color='skyblue')
-
-    # Add annotations to the bars
-    for bar, count in zip(bars, win_rate_df['matchCount']):
-        plt.text(bar.get_x() + bar.get_width() / 2 - 0.2, bar.get_height() - 5,
-                 f'{bar.get_height():.2f}%\n({count} matches)', ha='center', color='black')
-
-    plt.title(f'Win Rates by Opponent Character for {char}')
-    plt.xlabel('Opponent Character')
-    plt.ylabel('Win Rate (%)')
-    plt.xticks(rotation=45)
-    plt.ylim(0, 100)
-    plt.grid(True)
-    plt.tight_layout()
-    
-    # Save plot to a BytesIO object
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
-    plt.close()
-    
-    return buf
-
-def plot_opponent_distribution(df, char):
-    char_df = df[df['character'] == char]
-    
-    if char_df.empty:
-        return None  # Return None if no data for the character
-
-    # Count the total number of matches against each opponent character
-    opponent_counts = char_df['opponentChar'].value_counts()
-    
-    # Calculate the percentage of matches against each opponent character
-    opponent_percentages = opponent_counts / opponent_counts.sum() * 100
-
-    # Plot the distribution as a pie chart
-    plt.figure(figsize=(10, 6))
-    plt.pie(opponent_percentages, labels=opponent_percentages.index, autopct='%1.1f%%', startangle=140)
-    plt.title(f'Opponent Character Distribution for {char}')
-    plt.tight_layout()
-
-    # Save plot to a BytesIO object
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
-    plt.close()
-    
-    return buf
-
 @app.route('/')
 def home():
+    # Get today's date
+    today = datetime.today()
+
+    # Subtract one month
+    one_month_ago = today - relativedelta(months=1)
+
+    # Format the dates as 'YYYY-MM-DD'
+    end_date = today.strftime('%Y-%m-%d')
+    start_date = one_month_ago.strftime('%Y-%m-%d')
+
     return render_template_string('''
     <html>
     <head>
@@ -199,6 +130,10 @@ def home():
         <form action="/fetch_data" method="post">
             <label for="player_url">Player URL:</label>
             <input type="text" id="player_url" name="player_url" style="width:400px;">
+            <label for="start_date">Start Date:</label>
+            <input type="date" id="start_date" name="start_date" value="{{ start_date  }}">
+            <label for="end_date">End Date:</label>
+            <input type="date" id="end_date" name="end_date" value="{{ end_date }}">
             <button type="submit">Fetch Data</button>
         </form>
         <div id="graphs" style="margin-top:20px;">
@@ -206,7 +141,15 @@ def home():
                 <h2>Choose a graph type:</h2>
                 <form action="/visualize" method="get">
                     <input type="hidden" name="player_id" value="{{ player_id }}">
-                    <input type="hidden" name="character" value="{{ character }}">
+                    <input type="hidden" name="start_date" value="{{ start_date }}">
+                    <input type="hidden" name="end_date" value="{{ end_date }}">
+                    <label for="character">Character:</label>
+                    <select name="character" id="character">
+                        {% for char in characters %}
+                            <option value="{{ char }}">{{ char }}</option>
+                        {% endfor %}
+                    </select>
+                    <br><br>
                     <button type="submit" name="graph" value="daily_gains">Daily Gains</button>
                     <button type="submit" name="graph" value="win_rates">Win Rates</button>
                     <button type="submit" name="graph" value="distribution">Opponent Distribution</button>
@@ -215,19 +158,36 @@ def home():
         </div>
     </body>
     </html>
-    ''', graphs=False)
+    ''', graphs=False, end_date=end_date, start_date=start_date)
 
 
 @app.route('/fetch_data', methods=['POST'])
 def fetch_data():
     player_url = request.form.get('player_url')
+    start_date = request.form.get('start_date')
+    end_date = request.form.get('end_date')
+
     if not player_url:
         return jsonify({"error": "Player URL is required."}), 400
+
+    # Calculate default start_date as one month prior to the current date if not provided
+    if not start_date:
+        start_date = (datetime.today() - relativedelta(months=1)).strftime('%Y-%m-%d')
+    if not end_date:
+        end_date = datetime.today().strftime('%Y-%m-%d')
+
+    # Convert date strings to datetime.date objects
+    start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+    end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
 
     # Extract the player ID from the URL
     player_id = player_url.split('/')[-1]
 
-    df = fetch_player_data(player_id)
+    try:
+        df = fetch_player_data(player_id, start_date, end_date)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
     if df.empty:
         return jsonify({"error": "No data found for the given player URL."}), 400
 
@@ -235,6 +195,29 @@ def fetch_data():
     if len(characters) == 0:
         return jsonify({"error": "No characters found for the given player URL."}), 400
 
+    # Store the DataFrame in session as JSON
+    session['player_data'] = df.to_json(orient='split')
+
+    # Pass current date to the template
+    current_date = datetime.today().strftime('%Y-%m-%d')
+
+    return redirect(url_for('visualize_options', player_id=player_id, start_date=start_date, end_date=end_date))
+
+@app.route('/visualize_options')
+def visualize_options():
+    player_id = request.args.get('player_id')
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+
+    # Retrieve the DataFrame from the session
+    player_data = session.get('player_data')
+    if not player_data:
+        return jsonify({"error": "No player data found in session. Please fetch data again."}), 400
+
+    df = pd.read_json(StringIO(player_data), orient='split')
+
+    characters = df['character'].unique()
+    
     return render_template_string('''
     <html>
     <head>
@@ -246,6 +229,8 @@ def fetch_data():
         <h2>Choose a character and graph type:</h2>
         <form action="/visualize" method="get">
             <input type="hidden" name="player_id" value="{{ player_id }}">
+            <input type="hidden" name="start_date" value="{{ start_date }}">
+            <input type="hidden" name="end_date" value="{{ end_date }}">
             <label for="character">Character:</label>
             <select name="character" id="character">
                 {% for char in characters %}
@@ -259,8 +244,7 @@ def fetch_data():
         </form>
     </body>
     </html>
-    ''', player_id=player_id, characters=characters)
-
+    ''', player_id=player_id, start_date=start_date, end_date=end_date, characters=characters)
 
 
 @app.route('/visualize', methods=['GET'])
@@ -268,7 +252,9 @@ def visualize():
     player_id = request.args.get('player_id')
     char = request.args.get('character')
     graph = request.args.get('graph')
-    
+    start_date = request.args.get('start_date') 
+    end_date = request.args.get('end_date') or datetime.today().strftime('%Y-%m-%d')
+
     missing_params = []
     if not player_id:
         missing_params.append('player_id')
@@ -282,22 +268,25 @@ def visualize():
             "error": f"Missing parameters: {', '.join(missing_params)}",
             "example_request": "/visualize?player_id=3BgbnRiDAaMa&character=Azucena&graph=daily_gains"
         }), 400
-    
-    df = fetch_player_data(player_id)
-    if df.empty:
-        return jsonify({"error": "No data found for the given player ID."}), 400
-    
+
+    # Retrieve the DataFrame from the session
+    player_data = session.get('player_data')
+    if not player_data:
+        return jsonify({"error": "No player data found in session. Please fetch data again."}), 400
+
+    df = pd.read_json(StringIO(player_data), orient='split')
+
     characters = df['character'].unique()
     
     if char not in characters:
         return jsonify({"error": "Invalid character."}), 400
     
     if graph == 'daily_gains':
-        buf = plot_daily_gains(df, char)
+        buf = plot_daily_gains(df, char, start_date, end_date)
     elif graph == 'win_rates':
-        buf = plot_win_rates(df, char)
+        buf = plot_win_rates(df, char, start_date, end_date)
     elif graph == 'distribution':
-        buf = plot_opponent_distribution(df, char)
+        buf = plot_opponent_distribution(df, char, start_date, end_date)
     else:
         return jsonify({"error": "Invalid graph type. Use 'daily_gains', 'win_rates', or 'opponent_distribution'."}), 400
     
@@ -307,5 +296,8 @@ def visualize():
     # Return the plots as a response
     return send_file(buf, mimetype='image/png')
 
+
 if __name__ == "__main__":
     serve(app, host="0.0.0.0", port=8000)
+
+    
