@@ -25,20 +25,14 @@ app.config['SESSION_FILE_DIR'] = './.flask_session/'
 Session(app)
 
 def fetch_player_data(player_id, start_date=None, end_date=None):
-    # URL of the webpage
     url = f'https://wank.wavu.wiki/player/{player_id}'
-
-    # Fetch the content of the webpage
     response = requests.get(url)
     web_content = response.content
-
-    # Parse the webpage content
     soup = BeautifulSoup(web_content, 'html.parser')
 
-    # Define a list to hold the parsed data
     data_list = []
 
-    # Find the table in the webpage with <th>When</th>
+    # Extract match data
     table = None
     for tbl in soup.find_all('table'):
         if tbl.find('th') and tbl.find('th').text.strip() == 'When':
@@ -48,18 +42,13 @@ def fetch_player_data(player_id, start_date=None, end_date=None):
     if table:
         tbody = table.find('tbody')
         if tbody:
-            # Loop through each row in the table body
             for row in tbody.find_all('tr'):
                 cells = row.find_all('td')
-                
                 when_date_time = cells[0].text.strip() if cells[0] else ''
                 character = cells[1].text.strip() if cells[1] else ''
-                
-                # Extract score and isWin
                 score_lines = cells[2].text.strip().split()
                 score = score_lines[0] if score_lines else ''
                 is_win = score_lines[1] == "WIN" if len(score_lines) > 1 else False
-
                 rating = int(cells[3].text.strip().split()[0]) if cells[3] else 0
                 rating_change = int(cells[3].find('span').text.strip()) if cells[3].find('span') else 0
                 new_rating = rating + rating_change
@@ -83,26 +72,129 @@ def fetch_player_data(player_id, start_date=None, end_date=None):
                     "opponentRatingChange": opponent_rating_change,
                     "newOpponentRating": new_opponent_rating
                 }
-                
                 data_list.append(data)
 
-    # Convert the data_list to a DataFrame
     df = pd.DataFrame(data_list)
 
-    # Convert 'whenDateTime' to datetime and extract date
+    # Filter by date range if provided
     df['whenDateTime'] = pd.to_datetime(df['whenDateTime'], format='%d %b %Y %H:%M')
     df['date'] = df['whenDateTime'].dt.date
-
-    # Filter by date range if provided
     if start_date and end_date:
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
     elif start_date or end_date:
         raise ValueError("Both start_date and end_date must be provided.")
-
-    # Sort the DataFrame by 'whenDateTime'
     df = df.sort_values(by='whenDateTime')
 
-    return df
+    # Extract ratings from the Ratings table
+    ratings_table = soup.find('h2', text='Ratings').find_next('table')
+    ratings_data = {}
+    if ratings_table:
+        rows = ratings_table.find('tbody').find_all('tr')
+        for row in rows:
+            cols = row.find_all('td')
+            char_name = cols[0].text.strip()
+            rating = int(cols[1].text.strip())
+            ratings_data[char_name] = rating
+
+    return df, ratings_data
+
+@app.route('/fetch_data', methods=['POST'])
+def fetch_data_post():
+    player_url = request.form.get('player_url')
+    start_date = request.form.get('start_date')
+    end_date = request.form.get('end_date')
+
+    if not player_url:
+        return jsonify({"error": "Player URL is required."}), 400
+
+    if not start_date:
+        start_date = (datetime.today() - relativedelta(months=1)).strftime('%Y-%m-%d')
+    if not end_date:
+        end_date = datetime.today().strftime('%Y-%m-%d')
+
+    start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+    end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+
+    player_id = player_url.split('/')[-1]
+
+    try:
+        df, ratings_data = fetch_player_data(player_id, start_date, end_date)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    if df.empty:
+        return jsonify({"error": "No data found for the given player URL."}), 400
+
+    characters = df['character'].unique()
+    if len(characters) == 0:
+        return jsonify({"error": "No characters found for the given player URL."}), 400
+
+    # Calculate win rates and store character stats
+    character_stats = {}
+    for character, group in df.groupby('character'):
+        wins = group['isWin'].sum()
+        total_games = len(group)
+        win_rate = wins / total_games if total_games > 0 else 0
+        current_rating = ratings_data.get(character, "N/A")
+        character_stats[character] = {
+            "win_rate": win_rate,
+            "current_rating": current_rating
+        }
+
+    # Store the DataFrame in session as JSON
+    session['player_data'] = df.to_json(orient='split')
+    session['character_stats'] = character_stats
+
+    return redirect(url_for('visualize_options', player_id=player_id, start_date=start_date, end_date=end_date))
+
+
+@app.route('/fetch_data_json', methods=['GET'])
+def fetch_data_json():
+    player_url = request.args.get('player_url')
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+
+    if not player_url:
+        return jsonify({"error": "Player URL is required."}), 400
+
+    if not start_date:
+        start_date = (datetime.today() - relativedelta(months=1)).strftime('%Y-%m-%d')
+    if not end_date:
+        end_date = datetime.today().strftime('%Y-%m-%d')
+
+    start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+    end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+
+    player_id = player_url.split('/')[-1]
+
+    try:
+        df, ratings_data = fetch_player_data(player_id, start_date, end_date)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    if df.empty:
+        return jsonify({"error": "No data found for the given player URL."}), 400
+
+    characters = {}
+    for character, group in df.groupby('character'):
+        wins = group['isWin'].sum()
+        total_games = len(group)
+        win_rate = wins / total_games if total_games > 0 else 0
+        current_rating = ratings_data.get(character, "N/A")
+        characters[character] = {
+            "win_rate": win_rate,
+            "current_rating": current_rating
+        }
+
+    return jsonify({
+        "player_id": player_id,
+        "start_date": start_date.strftime('%Y-%m-%d'),
+        "end_date": end_date.strftime('%Y-%m-%d'),
+        "characters": characters,
+        "matches": df.to_dict(orient='records')
+    })
+
+
 
 @app.route('/')
 def home():
@@ -160,72 +252,52 @@ def home():
     </html>
     ''', graphs=False, end_date=end_date, start_date=start_date)
 
-
-@app.route('/fetch_data', methods=['POST'])
-def fetch_data():
-    player_url = request.form.get('player_url')
-    start_date = request.form.get('start_date')
-    end_date = request.form.get('end_date')
-
-    if not player_url:
-        return jsonify({"error": "Player URL is required."}), 400
-
-    # Calculate default start_date as one month prior to the current date if not provided
-    if not start_date:
-        start_date = (datetime.today() - relativedelta(months=1)).strftime('%Y-%m-%d')
-    if not end_date:
-        end_date = datetime.today().strftime('%Y-%m-%d')
-
-    # Convert date strings to datetime.date objects
-    start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
-    end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
-
-    # Extract the player ID from the URL
-    player_id = player_url.split('/')[-1]
-
-    try:
-        df = fetch_player_data(player_id, start_date, end_date)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-
-    if df.empty:
-        return jsonify({"error": "No data found for the given player URL."}), 400
-
-    characters = df['character'].unique()
-    if len(characters) == 0:
-        return jsonify({"error": "No characters found for the given player URL."}), 400
-
-    # Store the DataFrame in session as JSON
-    session['player_data'] = df.to_json(orient='split')
-
-    # Pass current date to the template
-    current_date = datetime.today().strftime('%Y-%m-%d')
-
-    return redirect(url_for('visualize_options', player_id=player_id, start_date=start_date, end_date=end_date))
-
 @app.route('/visualize_options')
 def visualize_options():
     player_id = request.args.get('player_id')
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
 
-    # Retrieve the DataFrame from the session
+    # Retrieve the DataFrame and character stats from the session
     player_data = session.get('player_data')
-    if not player_data:
+    character_stats = session.get('character_stats')
+    if not player_data or not character_stats:
         return jsonify({"error": "No player data found in session. Please fetch data again."}), 400
 
     df = pd.read_json(StringIO(player_data), orient='split')
 
-    characters = df['character'].unique()
-    
     return render_template_string('''
     <html>
     <head>
-        <title>Player Visualization tool</title>
+        <title>Player Visualization Tool</title>
+        <style>
+            .win-rate-green { color: green; }
+        </style>
     </head>
     <body>
-        <h1>Player Visualization tool</h1>
+        <h1>Player Visualization Tool</h1>
         <p>Data fetched successfully for player: {{ player_id }}</p>
+        <h2>Character Ratings and Win Rates</h2>
+        <table border="1">
+            <thead>
+                <tr>
+                    <th>Character</th>
+                    <th>Rating</th>
+                    <th>Win Rate (%)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for char, stats in character_stats.items() %}
+                <tr>
+                    <td>{{ char }}</td>
+                    <td>{{ stats['current_rating'] }}</td>
+                    <td class="{{ 'win-rate-green' if stats['win_rate'] * 100 >= 50 else '' }}">
+                        {{ (stats['win_rate'] * 100)|round(2) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
         <h2>Choose a character and graph type:</h2>
         <form action="/visualize" method="get">
             <input type="hidden" name="player_id" value="{{ player_id }}">
@@ -233,7 +305,7 @@ def visualize_options():
             <input type="hidden" name="end_date" value="{{ end_date }}">
             <label for="character">Character:</label>
             <select name="character" id="character">
-                {% for char in characters %}
+                {% for char in character_stats %}
                     <option value="{{ char }}">{{ char }}</option>
                 {% endfor %}
             </select>
@@ -244,7 +316,8 @@ def visualize_options():
         </form>
     </body>
     </html>
-    ''', player_id=player_id, start_date=start_date, end_date=end_date, characters=characters)
+    ''', player_id=player_id, start_date=start_date, end_date=end_date, character_stats=character_stats)
+
 
 
 @app.route('/visualize', methods=['GET'])
